@@ -21,8 +21,9 @@ function sleep(ms: number, signal: AbortSignal) {
 }
 
 async function demoResponse(request: NextRequest, since: string | null) {
-  if (request.nextUrl.searchParams.get("reset") === "1") resetDemo(Date.now());
-  let frame = demoFrame(Date.now(), since);
+  const reset = request.nextUrl.searchParams.get("reset") === "1";
+  if (reset) resetDemo(Date.now());
+  let frame = demoFrame(Date.now(), since, reset);
   if (frame.waitMs > 0) {
     await sleep(frame.waitMs, request.signal);
     frame = demoFrame(Date.now(), since);
@@ -45,14 +46,14 @@ export async function GET(request: NextRequest) {
 
   const database = `${COUCH}/${meetId}_readonly`;
   const url = since
-    ? `${database}/_changes?include_docs=true&feed=longpoll&conflicts=true&timeout=20000&limit=100&since=${encodeURIComponent(since)}`
+    ? `${database}/_changes?include_docs=true&feed=longpoll&conflicts=true&timeout=8000&limit=100&since=${encodeURIComponent(since)}`
     : `${database}/_all_docs?conflicts=true&update_seq=true&include_docs=true`;
 
   try {
     const response = await fetch(url, {
       cache: "no-store",
       headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(28_000),
+      signal: AbortSignal.timeout(9_000),
     });
 
     if (!response.ok) {

@@ -3,7 +3,7 @@ export const DEMO_MEET_ID = "demo";
 const ATTEMPT_MS = 5_000;
 const SLOW_MS = 12_000;
 const BREAK_MS = 12_000;
-const POLL_LIMIT_MS = 20_000;
+const POLL_LIMIT_MS = 8_000;
 const PLATFORM_ID = "platform-demo";
 const LIFTS = ["squat", "bench", "deadlift"] as const;
 const LIFT_CODE = { squat: "s", bench: "b", deadlift: "d" };
@@ -272,15 +272,14 @@ function changedDocs(previous: Doc[], next: Doc[]) {
   });
 }
 
-export function demoFrame(now: number, since: string | null) {
-  const startedAt = demoOrigin(now);
+export function demoFrame(now: number, since: string | null, reset = false) {
+  const parsed = reset ? null : since?.match(/^(\d+):(\d+)$/);
+  const startedAt = parsed ? Number(parsed[1]) : demoOrigin(now);
   const elapsed = Math.max(0, now - startedAt);
   const current = docsAt(elapsed, startedAt);
   const sequence = `${startedAt}:${current.cursor}`;
-  const parsed = since?.match(/^(\d+):(\d+)$/);
-  const sameRun = parsed?.[1] === String(startedAt);
 
-  if (!sameRun) {
+  if (!parsed) {
     return {
       mode: "snapshot" as const,
       sequence,

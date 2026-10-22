@@ -6,6 +6,10 @@ type Doc = Record<string, unknown> & { _id?: string };
 
 const LIFTS = ["squat", "bench", "deadlift"];
 const text = (value: unknown) => (typeof value === "string" ? value : "");
+const canonicalLift = (value: unknown) => {
+  const name = text(value);
+  return name === "dead" ? "deadlift" : name;
+};
 const number = (value: unknown) =>
   typeof value === "number" ? value : Number(value) || 0;
 
@@ -33,7 +37,7 @@ export default function Board({
   onSelectLifter: (id: string) => void;
 }) {
   const [pinnedLift, setPinnedLift] = useState<string | null>(null);
-  const liveLift = text(currentAttempt?.liftName);
+  const liveLift = canonicalLift(currentAttempt?.liftName);
   const lift = pinnedLift ?? (liveLift || "squat");
   const currentId = text(currentAttempt?._id);
   const platformIds = [...new Set(lifters.map((lifter) => text(lifter.platformId)))];
@@ -80,7 +84,7 @@ export default function Board({
                 const attempt = attempts.find(
                   (item) =>
                     item.lifterId === lifter._id &&
-                    item.liftName === lift &&
+                    canonicalLift(item.liftName) === lift &&
                     number(item.attemptNumber) === round,
                 );
                 return {

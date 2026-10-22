@@ -11,6 +11,10 @@ const DEFAULT_MEET = "demo";
 const LIFTS = ["squat", "bench", "deadlift"];
 
 const text = (value: unknown) => (typeof value === "string" ? value : "");
+const canonicalLift = (value: unknown) => {
+  const name = text(value);
+  return name === "dead" ? "deadlift" : name;
+};
 const number = (value: unknown) =>
   typeof value === "number" ? value : Number(value) || 0;
 
@@ -54,6 +58,7 @@ export default function Planner() {
   const [liftGapMinutes, setLiftGapMinutes] = useState(10);
   const [feedKey, setFeedKey] = useState(0);
   const [view, setView] = useState<"planner" | "board">("planner");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [warmups, setWarmups] = useState<Warmup[]>([
     { id: 1, weight: "Bar", gap: 5 },
     { id: 2, weight: "60", gap: 5 },
@@ -77,14 +82,23 @@ export default function Planner() {
       const value = JSON.parse(saved);
       queueMicrotask(() => {
         if (Array.isArray(value.warmups)) setWarmups(value.warmups);
-      if (value.pace) setPace(value.pace);
-      if (value.breakMinutes) setBreakMinutes(value.breakMinutes);
-      if (value.liftGapMinutes) setLiftGapMinutes(value.liftGapMinutes);
+        if (value.pace) setPace(value.pace);
+        if (value.breakMinutes) setBreakMinutes(value.breakMinutes);
+        if (value.liftGapMinutes) setLiftGapMinutes(value.liftGapMinutes);
       });
     } catch {
       // Ignore stale local data.
     }
   }, []);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setSettingsOpen(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [settingsOpen]);
 
   useEffect(() => {
     localStorage.setItem(
@@ -189,7 +203,7 @@ export default function Planner() {
               return (
                 owner &&
                 owner.flight === flight &&
-                item.liftName === liftName &&
+                canonicalLift(item.liftName) === liftName &&
                 number(item.attemptNumber) === round
               );
             })
@@ -220,7 +234,7 @@ export default function Planner() {
       const target = model.attempts.find(
         (item) =>
           item.lifterId === activeLifterId &&
-          item.liftName === liftName &&
+          canonicalLift(item.liftName) === liftName &&
           number(item.attemptNumber) === 1,
       );
       if (!target) return { lift: liftName, state: "unavailable" as const };
@@ -247,7 +261,7 @@ export default function Planner() {
       for (const attempt of ahead) {
         const previousOwner = lifterById.get(previous.lifterId as string);
         const owner = lifterById.get(attempt.lifterId as string);
-        if (attempt.liftName !== previous.liftName) liftBreaks++;
+        if (canonicalLift(attempt.liftName) !== canonicalLift(previous.liftName)) liftBreaks++;
         else if (owner?.flight !== previousOwner?.flight) flightBreaks++;
         previous = attempt;
       }
@@ -331,7 +345,7 @@ export default function Planner() {
       activePlatform?._id,
   );
   const barStatus = currentLifter
-    ? `On the bar · ${text(currentLifter.name)} · ${text(currentAttempt?.liftName)} ${text(currentAttempt?.attemptNumber)} · ${number(currentAttempt?.weight)} ${text(model.meet?.units).toLowerCase()}`
+    ? `On the bar · ${text(currentLifter.name)} · ${canonicalLift(currentAttempt?.liftName)} ${text(currentAttempt?.attemptNumber)} · ${number(currentAttempt?.weight)} ${text(model.meet?.units).toLowerCase()}`
     : platformAttempts.length > 0 && platformAttempts.every((item) => item.result)
       ? "Platform finished"
       : platformAttempts.some((item) => item.result)
@@ -350,15 +364,68 @@ export default function Planner() {
         <div className="brand">
           <span>PC</span> Platform Coacher
         </div>
-        <div className={`connection ${status}`}>
-          <i />{" "}
-          {status === "live"
-            ? "Live"
-            : status === "loading"
-              ? "Connecting"
-              : "Offline"}
+        <div className="top-actions">
+          <div className={`connection ${status}`}>
+            <i />{" "}
+            {status === "live"
+              ? "Live"
+              : status === "loading"
+                ? "Connecting"
+                : "Offline"}
+          </div>
+          <button
+            type="button"
+            className="gear"
+            aria-label="Settings"
+            aria-expanded={settingsOpen}
+            onClick={() => setSettingsOpen(true)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M19.4 13.5a7.7 7.7 0 0 0 .1-1.5 7.7 7.7 0 0 0-.1-1.5l2-1.6a.5.5 0 0 0 .1-.6l-1.9-3.3a.5.5 0 0 0-.6-.2l-2.4 1a7.4 7.4 0 0 0-2.6-1.5l-.4-2.5a.5.5 0 0 0-.5-.4h-3.8a.5.5 0 0 0-.5.4l-.4 2.5a7.4 7.4 0 0 0-2.6 1.5l-2.4-1a.5.5 0 0 0-.6.2L2.4 8.3a.5.5 0 0 0 .1.6l2 1.6a7.7 7.7 0 0 0-.1 1.5 7.7 7.7 0 0 0 .1 1.5l-2 1.6a.5.5 0 0 0-.1.6l1.9 3.3a.5.5 0 0 0 .6.2l2.4-1a7.4 7.4 0 0 0 2.6 1.5l.4 2.5a.5.5 0 0 0 .5.4h3.8a.5.5 0 0 0 .5-.4l.4-2.5a7.4 7.4 0 0 0 2.6-1.5l2.4 1a.5.5 0 0 0 .6-.2l1.9-3.3a.5.5 0 0 0-.1-.6l-2-1.6ZM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5Z"
+              />
+            </svg>
+          </button>
         </div>
       </header>
+      {settingsOpen && (
+        <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="section-title">
+              <h2 id="settings-title">Settings</h2>
+              <button
+                type="button"
+                className="remove"
+                aria-label="Close settings"
+                onClick={() => setSettingsOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <p className="demo-note">
+              The demo is a simulated platform. Most attempts take 5 seconds, with
+              a slow attempt, flight breaks, a weight change, and a scratch.
+            </p>
+            <button
+              type="button"
+              className="demo-action"
+              onClick={() => {
+                setSettingsOpen(false);
+                void watchDemo();
+              }}
+            >
+              {meetId === "demo" ? "Restart demo" : "Watch demo"}
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="shell">
         <section className="hero">
@@ -375,16 +442,7 @@ export default function Planner() {
               placeholder="LiftingCast meet URL or ID"
             />
             <button>Load meet</button>
-            <button type="button" className="ghost" onClick={watchDemo}>
-              {meetId === "demo" ? "Restart demo" : "Watch demo"}
-            </button>
           </form>
-          {meetId === "demo" && (
-            <p className="demo-note">
-              Simulated platform. Most attempts take 5 seconds. The script also
-              includes a slow attempt, flight breaks, a weight change, and a scratch.
-            </p>
-          )}
           {error && <p className="error">{error}</p>}
         </section>
 

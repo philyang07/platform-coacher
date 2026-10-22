@@ -36,6 +36,23 @@ button { cursor: pointer; }
   display: grid; place-items: center; width: 32px; height: 32px;
   border: 1px solid #ffffff70; border-radius: 7px; color: var(--lime); font-size: 12px;
 }
+.top-actions { display: flex; align-items: center; gap: 14px; }
+.gear {
+  display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
+  border: 1px solid #ffffff30; border-radius: 8px; background: transparent; color: white;
+}
+.gear svg { width: 18px; height: 18px; }
+.gear:hover { background: #ffffff18; }
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
+  padding: 24px; background: #18201c66;
+}
+.modal { width: min(420px, 100%); padding: 22px; background: var(--card); color: var(--ink); border-radius: 12px; }
+.modal h2 { font-size: 22px; }
+.demo-action {
+  height: 40px; margin-top: 16px; padding: 0 16px; border: 0; border-radius: 7px;
+  background: var(--green); color: white; font-weight: 700;
+}
 .connection { display: flex; align-items: center; gap: 7px; font-size: 13px; opacity: .9; }
 .connection i { width: 8px; height: 8px; border-radius: 50%; background: #aab2ad; }
 .connection.live i { background: var(--lime); box-shadow: 0 0 0 4px #d9f65a24; }
@@ -54,10 +71,7 @@ h1 { margin: 0; font-size: clamp(34px, 5vw, 58px); line-height: 1.02; letter-spa
   border: 0; border-radius: 7px; background: var(--green); color: white; font-weight: 700;
   padding: 0 18px;
 }
-.meet-form button.ghost {
-  background: transparent; color: var(--green); border: 1px solid #b9c5be;
-}
-.demo-note { max-width: 620px; margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+.demo-note { margin: 14px 0 0; color: var(--muted); font-size: 14px; line-height: 1.5; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .bar-status { margin: 22px 0 0; color: var(--green); font-size: 14px; font-weight: 700; }
 .error { color: #9b302a; font-size: 13px; margin: 9px 0 0; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px #26352c0a; }
