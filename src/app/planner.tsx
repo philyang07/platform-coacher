@@ -62,12 +62,12 @@ export default function Planner() {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [lifterId, setLifterId] = useState("");
   const [lift, setLift] = useState("squat");
-  const [pace, setPace] = useState(75);
-  const [breakMinutes, setBreakMinutes] = useState(10);
+  const [pace, setPace] = useState(60);
   const [liftGapMinutes, setLiftGapMinutes] = useState(10);
   const [feedKey, setFeedKey] = useState(0);
   const [view, setView] = useState<"planner" | "board">("planner");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
   const [warmups, setWarmups] = useState<Warmup[]>([
     { id: 1, weight: "Bar", gap: 5 },
     { id: 2, weight: "60", gap: 5 },
@@ -76,6 +76,9 @@ export default function Planner() {
   ]);
   const docsRef = useRef(docs);
   const sequenceRef = useRef(sequence);
+  const skipRef = useRef(0);
+  const epochRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     docsRef.current = docs;
@@ -91,8 +94,7 @@ export default function Planner() {
       const value = JSON.parse(saved);
       queueMicrotask(() => {
         if (Array.isArray(value.warmups)) setWarmups(value.warmups);
-        if (value.pace) setPace(value.pace);
-        if (value.breakMinutes) setBreakMinutes(value.breakMinutes);
+        if (typeof value.pace === "number" && value.pace !== 75) setPace(value.pace);
         if (value.liftGapMinutes) setLiftGapMinutes(value.liftGapMinutes);
       });
     } catch {
@@ -140,13 +142,15 @@ export default function Planner() {
   useEffect(() => {
     localStorage.setItem(
       "platform-coacher-settings",
-      JSON.stringify({ warmups, pace, breakMinutes, liftGapMinutes }),
+      JSON.stringify({ warmups, pace, liftGapMinutes }),
     );
-  }, [warmups, pace, breakMinutes, liftGapMinutes]);
+  }, [warmups, pace, liftGapMinutes]);
 
   useEffect(() => {
     if (!meetId) return;
     let cancelled = false;
+    const epoch = ++epochRef.current;
+    skipRef.current = 0;
     const initialDocs = new Map<string, Doc>();
     docsRef.current = initialDocs;
     sequenceRef.current = "";
@@ -155,34 +159,46 @@ export default function Planner() {
       setDocs(initialDocs);
       setSequence("");
       setStatus("loading");
+      setAdvancing(false);
       setError("");
     });
 
+    function applyFeed(data: { mode: string; sequence: string; docs: ApiDoc[] }) {
+      const next = data.mode === "snapshot" ? new Map<string, Doc>() : new Map(docsRef.current);
+      for (const item of data.docs) {
+        if (item.deleted) next.delete(item.id);
+        else if (item.doc) next.set(item.id, item.doc);
+      }
+      docsRef.current = next;
+      sequenceRef.current = data.sequence;
+      setDocs(next);
+      setSequence(data.sequence);
+      setUpdatedAt(new Date());
+      setStatus("live");
+      setError("");
+    }
+
     async function poll() {
       while (!cancelled) {
+        const ticket = epochRef.current;
+        const controller = new AbortController();
+        abortRef.current = controller;
         try {
           const params = new URLSearchParams({ meetId });
           if (sequenceRef.current) params.set("since", sequenceRef.current);
-          const response = await fetch(`/api/meet?${params}`);
+          if (meetId === "demo" && skipRef.current > 0) {
+            params.set("skip", String(skipRef.current));
+          }
+          const response = await fetch(`/api/meet?${params}`, { signal: controller.signal });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error ?? "Could not load meet");
           if (cancelled) return;
-
-          const next =
-            data.mode === "snapshot" ? new Map<string, Doc>() : new Map(docsRef.current);
-          for (const item of data.docs as ApiDoc[]) {
-            if (item.deleted) next.delete(item.id);
-            else if (item.doc) next.set(item.id, item.doc);
-          }
-          docsRef.current = next;
-          sequenceRef.current = data.sequence;
-          setDocs(next);
-          setSequence(data.sequence);
-          setUpdatedAt(new Date());
-          setStatus("live");
-          setError("");
+          if (ticket !== epochRef.current) continue;
+          applyFeed(data);
         } catch (reason) {
           if (cancelled) return;
+          if (reason instanceof Error && reason.name === "AbortError") continue;
+          if (ticket !== epochRef.current) continue;
           setStatus("error");
           setError(reason instanceof Error ? reason.message : "Connection failed");
           await new Promise((resolve) => setTimeout(resolve, 5000));
@@ -193,6 +209,7 @@ export default function Planner() {
     poll();
     return () => {
       cancelled = true;
+      if (epochRef.current === epoch) abortRef.current?.abort();
     };
   }, [meetId, feedKey]);
 
@@ -308,41 +325,36 @@ export default function Planner() {
       }
 
       const ahead = ordered.slice(currentIndex + 1, targetIndex + 1);
-      let flightBreaks = 0;
       let liftBreaks = 0;
       let previous = ordered[currentIndex];
       for (const attempt of ahead) {
-        const previousOwner = lifterById.get(previous.lifterId as string);
-        const owner = lifterById.get(attempt.lifterId as string);
         if (canonicalLift(attempt.liftName) !== canonicalLift(previous.liftName)) liftBreaks++;
-        else if (owner?.flight !== previousOwner?.flight) flightBreaks++;
         previous = attempt;
       }
-      const seconds =
-        ahead.length * pace +
-        flightBreaks * breakMinutes * 60 +
-        liftBreaks * liftGapMinutes * 60;
+      const seconds = ahead.length * pace + liftBreaks * liftGapMinutes * 60;
       return {
         lift: liftName,
         state: "estimated" as const,
         target,
         at: new Date((updatedAt?.getTime() ?? 0) + seconds * 1000),
         attempts: ahead.length,
-        flightBreaks,
         liftBreaks,
-        uncertainty: Math.max(
-          2,
-          Math.ceil((ahead.length * 10) / 60 + flightBreaks * 2 + liftBreaks * 3),
-        ),
+        uncertainty: Math.max(2, Math.ceil((ahead.length * 10) / 60 + liftBreaks * 3)),
       };
     });
-  }, [model, activeLifterId, pace, breakMinutes, liftGapMinutes, updatedAt]);
+  }, [model, activeLifterId, pace, liftGapMinutes, updatedAt]);
 
   const estimate = estimates?.find((item) => item.lift === lift) ?? null;
+  const planEstimate =
+    estimate?.state === "estimated"
+      ? estimate
+      : (estimates
+          ?.slice(Math.max(LIFTS.indexOf(lift), 0))
+          .find((item) => item.state === "estimated") ?? null);
 
   const timeline = useMemo(() => {
-    if (estimate?.state !== "estimated") return [];
-    let cursor = estimate.at.getTime();
+    if (planEstimate?.state !== "estimated") return [];
+    let cursor = planEstimate.at.getTime();
     return [...warmups]
       .reverse()
       .map((warmup) => {
@@ -350,7 +362,41 @@ export default function Planner() {
         return { ...warmup, at: new Date(cursor) };
       })
       .reverse();
-  }, [estimate, warmups]);
+  }, [planEstimate, warmups]);
+
+  async function fastForward() {
+    if (meetId !== "demo" || advancing) return;
+    const ticket = ++epochRef.current;
+    setAdvancing(true);
+    try {
+      const params = new URLSearchParams({ meetId: "demo", advance: "1" });
+      if (sequenceRef.current) params.set("since", sequenceRef.current);
+      if (skipRef.current > 0) params.set("skip", String(skipRef.current));
+      const response = await fetch(`/api/meet?${params}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not fast-forward");
+      if (ticket !== epochRef.current) return;
+      skipRef.current = typeof data.skip === "number" ? data.skip : skipRef.current;
+      const next = data.mode === "snapshot" ? new Map<string, Doc>() : new Map(docsRef.current);
+      for (const item of data.docs as ApiDoc[]) {
+        if (item.deleted) next.delete(item.id);
+        else if (item.doc) next.set(item.id, item.doc);
+      }
+      docsRef.current = next;
+      sequenceRef.current = data.sequence;
+      setDocs(next);
+      setSequence(data.sequence);
+      setUpdatedAt(new Date());
+      setStatus("live");
+      setError("");
+      abortRef.current?.abort();
+    } catch (reason) {
+      if (ticket !== epochRef.current) return;
+      setError(reason instanceof Error ? reason.message : "Could not fast-forward");
+    } finally {
+      if (ticket === epochRef.current) setAdvancing(false);
+    }
+  }
 
   async function watchDemo() {
     try {
@@ -405,19 +451,42 @@ export default function Planner() {
       model.lifters.find((lifter) => lifter._id === item.lifterId)?.platformId ===
       activePlatform?._id,
   );
+  const latestResult = platformAttempts
+    .filter((attempt) => attempt.result)
+    .sort((a, b) => resultTime(b) - resultTime(a))[0];
+  const latestResultLifter = model.lifters.find((item) => item._id === latestResult?.lifterId);
+  const nextLift = LIFTS.find((liftName) =>
+    platformAttempts.some(
+      (attempt) => !attempt.result && canonicalLift(attempt.liftName) === liftName,
+    ),
+  );
+  const liveFlight =
+    text(currentLifter?.flight) ||
+    text(latestResultLifter?.flight) ||
+    text(selectedLifter?.flight);
   const barStatus = currentLifter
-    ? `On the bar · ${text(currentLifter.name)} · ${canonicalLift(currentAttempt?.liftName)} ${text(currentAttempt?.attemptNumber)} · ${number(currentAttempt?.weight)} ${text(model.meet?.units).toLowerCase()}`
+    ? `On the bar · ${text(currentLifter.name)} · Flight ${text(currentLifter.flight)} · ${canonicalLift(currentAttempt?.liftName)} ${text(currentAttempt?.attemptNumber)} · ${number(currentAttempt?.weight)} ${text(model.meet?.units).toLowerCase()}`
     : platformAttempts.length > 0 && platformAttempts.every((item) => item.result)
       ? "Platform finished"
-      : platformAttempts.some((item) => item.result)
-        ? "Flight break"
-        : "Waiting for the platform";
+      : latestResult && nextLift && canonicalLift(latestResult.liftName) !== nextLift
+        ? "Lift break"
+        : platformAttempts.some((item) => item.result)
+          ? "Waiting for the next attempt"
+          : "Waiting for the platform";
   const estimateTarget =
     estimate && "target" in estimate ? estimate.target : undefined;
   const targetWeight =
     estimateTarget && typeof estimateTarget.weight === "number"
       ? `${estimateTarget.weight} ${text(model.meet?.units).toLowerCase()}`
       : "not declared";
+  const planTarget =
+    planEstimate && "target" in planEstimate ? planEstimate.target : undefined;
+  const planWeight =
+    planTarget && typeof planTarget.weight === "number"
+      ? `${planTarget.weight} ${text(model.meet?.units).toLowerCase()}`
+      : "not declared";
+  const planLiftName = planEstimate?.lift ?? lift;
+  const planLiftLabel = planLiftName[0].toUpperCase() + planLiftName.slice(1);
 
   return (
     <main>
@@ -426,6 +495,16 @@ export default function Planner() {
           <span>PC</span> Platform Coacher
         </div>
         <div className="top-actions">
+          {meetId === "demo" && (
+            <button
+              type="button"
+              className="fast-forward"
+              disabled={advancing}
+              onClick={() => void fastForward()}
+            >
+              Fast-forward
+            </button>
+          )}
           {meetId && (
             <div className={`connection ${status}`}>
               <i />{" "}
@@ -474,7 +553,7 @@ export default function Planner() {
             </div>
             <p className="demo-note">
               The demo is a simulated platform. Most attempts take 5 seconds, with
-              a slow attempt, flight breaks, a weight change, and a scratch.
+              a slow attempt, lift breaks, a weight change, and a scratch.
             </p>
             <button
               type="button"
@@ -609,19 +688,6 @@ export default function Planner() {
             />
           </label>
           <label>
-            Between flights
-            <div className="input-suffix">
-              <input
-                type="number"
-                min="0"
-                max="60"
-                value={breakMinutes}
-                onChange={(event) => setBreakMinutes(+event.target.value)}
-              />
-              <span>min</span>
-            </div>
-          </label>
-          <label>
             Between lifts
             <div className="input-suffix">
               <input
@@ -640,34 +706,35 @@ export default function Planner() {
           <div className="card forecast">
             <div className="section-title">
               <div>
-                <p className="eyebrow">First attempt forecast</p>
+                <p className="eyebrow">
+                  {planEstimate?.state === "estimated"
+                    ? `${planLiftLabel} forecast`
+                    : "First attempt forecast"}
+                </p>
                 <h2>
                   {selectedLifter ? text(selectedLifter.name) : "Select a lifter"}
                 </h2>
               </div>
               <span className="flight">
-                Flight {text(selectedLifter?.flight) || "—"}
+                Flight {liveFlight || "—"}
               </span>
             </div>
             <p className="bar-status">{barStatus}</p>
 
-            {estimate?.state === "estimated" ? (
+            {planEstimate?.state === "estimated" ? (
               <>
-                <div className="big-time">{formatTime(estimate.at)}</div>
+                <div className="big-time">{formatTime(planEstimate.at)}</div>
                 <p className="range">
-                  Estimated ± {estimate.uncertainty} min · opener {targetWeight}
+                  Estimated ± {planEstimate.uncertainty} min · {planLiftLabel} opener{" "}
+                  {planWeight}
                 </p>
                 <div className="stats">
                   <div>
-                    <strong>{estimate.attempts}</strong>
+                    <strong>{planEstimate.attempts}</strong>
                     <span>attempts ahead</span>
                   </div>
                   <div>
-                    <strong>{estimate.flightBreaks}</strong>
-                    <span>flight breaks</span>
-                  </div>
-                  <div>
-                    <strong>{estimate.liftBreaks}</strong>
+                    <strong>{planEstimate.liftBreaks}</strong>
                     <span>lift breaks</span>
                   </div>
                 </div>
@@ -698,7 +765,7 @@ export default function Planner() {
             )}
             <div className="later-lifts">
               {estimates
-                ?.filter((item) => item.lift !== lift)
+                ?.filter((item) => item.lift !== planLiftName)
                 .map((item) => (
                   <div className="later-lift" key={item.lift}>
                     <span>{item.lift[0].toUpperCase() + item.lift.slice(1)}</span>
@@ -724,7 +791,7 @@ export default function Planner() {
             <div className="section-title">
               <div>
                 <p className="eyebrow">Countdown plan</p>
-                <h2>Warm-ups</h2>
+                <h2>{planLiftLabel} warm-ups</h2>
               </div>
               <button
                 className="add"
@@ -783,9 +850,11 @@ export default function Planner() {
               );
             })}
             <div className="attempt-row">
-              <span>1st attempt · {targetWeight}</span>
+              <span>
+                {planLiftLabel} opener · {planWeight}
+              </span>
               <strong>
-                {estimate?.state === "estimated" ? formatTime(estimate.at) : "—"}
+                {planEstimate?.state === "estimated" ? formatTime(planEstimate.at) : "—"}
               </strong>
             </div>
           </div>

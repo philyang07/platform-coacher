@@ -129,13 +129,12 @@ function schedule() {
   const weights = new Map<string, Array<{ at: number; weight: number }>>();
   const slots: Slot[] = [];
   let time = 0;
-  let previous: { lift: Lift; flight: string } | null = null;
+  let previousLift: Lift | null = null;
 
   while (true) {
     const attempt = nextAttempt(attempts, done, scratched);
     if (!attempt) break;
-    const lifter = lifterById(attempt.lifterId);
-    if (previous && (previous.lift !== attempt.liftName || previous.flight !== lifter.flight)) {
+    if (previousLift && previousLift !== attempt.liftName) {
       slots.push({ kind: "break", start: time, end: time + BREAK_MS });
       time += BREAK_MS;
     }
@@ -149,7 +148,7 @@ function schedule() {
     });
     time += duration;
     done.add(attempt._id);
-    previous = { lift: attempt.liftName, flight: lifter.flight };
+    previousLift = attempt.liftName;
 
     for (const mutation of MUTATIONS.filter((item) => item.after === attempt._id)) {
       if (mutation.type === "scratch") {
@@ -272,10 +271,10 @@ function changedDocs(previous: Doc[], next: Doc[]) {
   });
 }
 
-export function demoFrame(now: number, since: string | null, reset = false) {
+export function demoFrame(now: number, since: string | null, reset = false, skipMs = 0) {
   const parsed = reset ? null : since?.match(/^(\d+):(\d+)$/);
   const startedAt = parsed ? Number(parsed[1]) : demoOrigin(now);
-  const elapsed = Math.max(0, now - startedAt);
+  const elapsed = Math.max(0, now - startedAt + Math.max(0, skipMs));
   const current = docsAt(elapsed, startedAt);
   const sequence = `${startedAt}:${current.cursor}`;
 
@@ -305,4 +304,19 @@ export function demoFrame(now: number, since: string | null, reset = false) {
     docs: [],
     waitMs: current.remainingMs === null ? POLL_LIMIT_MS : Math.min(POLL_LIMIT_MS, current.remainingMs),
   };
+}
+
+export function advanceDemo(now: number, since: string | null, skipMs = 0) {
+  const parsed = since?.match(/^(\d+):(\d+)$/);
+  const startedAt = parsed ? Number(parsed[1]) : demoOrigin(now);
+  const rawElapsed = Math.max(0, now - startedAt);
+  const elapsed = rawElapsed + Math.max(0, skipMs);
+  const slots = schedule().slots;
+  const next = slots.find((slot) => slot.kind === "attempt" && slot.start > elapsed);
+  const current = slots.find(
+    (slot) => slot.kind === "attempt" && slot.start <= elapsed && elapsed < slot.end,
+  );
+  const target = next?.start ?? current?.end;
+  const skip = target === undefined ? Math.max(0, skipMs) : target - rawElapsed;
+  return { ...demoFrame(now, since, false, skip), skip };
 }

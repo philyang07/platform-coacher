@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { DEMO_MEET_ID, demoFrame, resetDemo } from "@/lib/demo-meet";
+import { DEMO_MEET_ID, advanceDemo, demoFrame, resetDemo } from "@/lib/demo-meet";
 
 const COUCH = "https://couchdb.liftingcast.com";
 const MEET_ID = /^[a-z0-9]{12}$/;
@@ -20,13 +20,28 @@ function sleep(ms: number, signal: AbortSignal) {
   });
 }
 
+function readSkip(value: string | null) {
+  const skip = Number(value);
+  if (!Number.isFinite(skip) || skip <= 0) return 0;
+  return Math.min(skip, 24 * 60 * 60 * 1000);
+}
+
 async function demoResponse(request: NextRequest, since: string | null) {
   const reset = request.nextUrl.searchParams.get("reset") === "1";
+  const skip = reset ? 0 : readSkip(request.nextUrl.searchParams.get("skip"));
+  const advance = request.nextUrl.searchParams.get("advance") === "1";
   if (reset) resetDemo(Date.now());
-  let frame = demoFrame(Date.now(), since, reset);
+  if (advance && !reset) {
+    const frame = advanceDemo(Date.now(), since, skip);
+    return NextResponse.json(
+      { mode: frame.mode, sequence: frame.sequence, docs: frame.docs, skip: frame.skip },
+      { headers: NO_STORE },
+    );
+  }
+  let frame = demoFrame(Date.now(), since, reset, skip);
   if (frame.waitMs > 0) {
     await sleep(frame.waitMs, request.signal);
-    frame = demoFrame(Date.now(), since);
+    frame = demoFrame(Date.now(), since, false, skip);
   }
   return NextResponse.json(
     { mode: frame.mode, sequence: frame.sequence, docs: frame.docs },
