@@ -7,8 +7,8 @@ type Doc = Record<string, unknown> & { _id?: string };
 type Warmup = { id: number; weight: string; gap: number };
 type ApiDoc = { id: string; deleted: boolean; doc?: Doc };
 
-const DEFAULT_MEET = "demo";
 const LIFTS = ["squat", "bench", "deadlift"];
+type ListedMeet = { id: string; name: string; date: string };
 
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const canonicalLift = (value: unknown) => {
@@ -36,6 +36,12 @@ function formatTime(date: Date | null) {
     : "—";
 }
 
+function meetDay(value: string) {
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return "";
+  return `${match[3]}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`;
+}
+
 function extractMeetId(value: string) {
   const trimmed = value.trim().toLowerCase();
   if (trimmed === "demo") return "demo";
@@ -44,11 +50,14 @@ function extractMeetId(value: string) {
 }
 
 export default function Planner() {
-  const [meetInput, setMeetInput] = useState(DEFAULT_MEET);
-  const [meetId, setMeetId] = useState(DEFAULT_MEET);
+  const [meetInput, setMeetInput] = useState("");
+  const [meetId, setMeetId] = useState("");
   const [docs, setDocs] = useState<Map<string, Doc>>(new Map());
   const [sequence, setSequence] = useState("");
-  const [status, setStatus] = useState<"loading" | "live" | "error">("loading");
+  const [status, setStatus] = useState<"idle" | "loading" | "live" | "error">("idle");
+  const [catalog, setCatalog] = useState<ListedMeet[] | null>(null);
+  const [catalogError, setCatalogError] = useState("");
+  const [today, setToday] = useState("");
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [lifterId, setLifterId] = useState("");
@@ -101,6 +110,34 @@ export default function Planner() {
   }, [settingsOpen]);
 
   useEffect(() => {
+    queueMicrotask(() => {
+      const now = new Date();
+      setToday(
+        `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`,
+      );
+    });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/meets")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error ?? "Could not load meets");
+        if (!cancelled) setCatalog(data.meets ?? []);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setCatalog([]);
+          setCatalogError(reason instanceof Error ? reason.message : "Could not load meets");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem(
       "platform-coacher-settings",
       JSON.stringify({ warmups, pace, breakMinutes, liftGapMinutes }),
@@ -108,6 +145,7 @@ export default function Planner() {
   }, [warmups, pace, breakMinutes, liftGapMinutes]);
 
   useEffect(() => {
+    if (!meetId) return;
     let cancelled = false;
     const initialDocs = new Map<string, Doc>();
     docsRef.current = initialDocs;
@@ -192,6 +230,17 @@ export default function Planner() {
     const flights = [
       ...new Set(relevantLifters.map((item) => text(item.flight))),
     ].sort();
+    const declaredOpeners = new Set(
+      model.attempts
+        .filter(
+          (item) =>
+            lifterById.has(text(item.lifterId)) &&
+            number(item.attemptNumber) === 1 &&
+            typeof item.weight === "number" &&
+            item.weight > 0,
+        )
+        .map((item) => `${text(item.lifterId)}:${canonicalLift(item.liftName)}`),
+    );
     const ordered: Doc[] = [];
 
     for (const liftName of LIFTS) {
@@ -204,7 +253,8 @@ export default function Planner() {
                 owner &&
                 owner.flight === flight &&
                 canonicalLift(item.liftName) === liftName &&
-                number(item.attemptNumber) === round
+                number(item.attemptNumber) === round &&
+                declaredOpeners.has(`${text(item.lifterId)}:${liftName}`)
               );
             })
             .sort((a, b) => {
@@ -224,7 +274,7 @@ export default function Planner() {
 
     const platform = model.platforms.find((item) => item._id === lifter.platformId);
     let currentId = text(platform?.currentAttemptId);
-    if (!currentId) {
+    if (!currentId || !ordered.some((item) => item._id === currentId)) {
       currentId =
         [...ordered].sort((a, b) => resultTime(b) - resultTime(a))[0]?._id ?? "";
     }
@@ -245,6 +295,9 @@ export default function Planner() {
           target,
           at: resultTime(target) ? new Date(resultTime(target)) : null,
         };
+      }
+      if (typeof target.weight !== "number" || target.weight <= 0) {
+        return { lift: liftName, state: "unavailable" as const };
       }
       const targetIndex = ordered.findIndex((item) => item._id === target._id);
       if (targetIndex < 0 || currentIndex < 0) {
@@ -312,6 +365,13 @@ export default function Planner() {
     }
   }
 
+  function chooseMeet(id: string) {
+    setLifterId("");
+    setMeetInput(id);
+    setMeetId(id);
+    setError("");
+  }
+
   function loadMeet(event: React.FormEvent) {
     event.preventDefault();
     const id = extractMeetId(meetInput);
@@ -329,6 +389,7 @@ export default function Planner() {
     );
   }
 
+  const todayMeets = (catalog ?? []).filter((meet) => meetDay(meet.date) === today);
   const selectedLifter = model.lifters.find((item) => item._id === activeLifterId);
   const activePlatform = model.platforms.find(
     (item) => item._id === selectedLifter?.platformId,
@@ -365,14 +426,16 @@ export default function Planner() {
           <span>PC</span> Platform Coacher
         </div>
         <div className="top-actions">
-          <div className={`connection ${status}`}>
-            <i />{" "}
-            {status === "live"
-              ? "Live"
-              : status === "loading"
-                ? "Connecting"
-                : "Offline"}
-          </div>
+          {meetId && (
+            <div className={`connection ${status}`}>
+              <i />{" "}
+              {status === "live"
+                ? "Live"
+                : status === "loading"
+                  ? "Connecting"
+                  : "Offline"}
+            </div>
+          )}
           <button
             type="button"
             className="gear"
@@ -430,9 +493,15 @@ export default function Planner() {
       <div className="shell">
         <section className="hero">
           <p className="eyebrow">LiftingCast warm-up planner</p>
-          <h1>{text(model.meet?.name) || "Plan the platform, not the clock."}</h1>
+          <h1>
+            {meetId
+              ? text(model.meet?.name) || "Loading meet"
+              : "Meets today"}
+          </h1>
           <p className="subhead">
-            Live attempt order becomes a warm-up schedule for your lifter.
+            {meetId
+              ? "Live attempt order becomes a warm-up schedule for your lifter."
+              : "Choose a meet dated today, or paste a LiftingCast link."}
           </p>
           <form className="meet-form" onSubmit={loadMeet}>
             <input
@@ -443,9 +512,37 @@ export default function Planner() {
             />
             <button>Load meet</button>
           </form>
+          {meetId && (
+            <button type="button" className="text-button" onClick={() => chooseMeet("")}>
+              Back to the meet list
+            </button>
+          )}
           {error && <p className="error">{error}</p>}
         </section>
 
+        {!meetId && (
+          <section className="card meet-list">
+            {(catalog === null || !today) && <p>Loading meets…</p>}
+            {catalogError && <p className="error">{catalogError}</p>}
+            {catalog !== null && today && !catalogError && todayMeets.length === 0 && (
+              <p>No LiftingCast meets are dated today.</p>
+            )}
+            {todayMeets.map((meet) => (
+              <button
+                key={meet.id}
+                type="button"
+                className="meet-choice"
+                onClick={() => chooseMeet(meet.id)}
+              >
+                <strong>{meet.name}</strong>
+                <span>{meet.date}</span>
+              </button>
+            ))}
+          </section>
+        )}
+
+        {meetId && (
+        <>
         <div className="tabs" role="tablist" aria-label="Views">
           <button
             type="button"
@@ -694,6 +791,8 @@ export default function Planner() {
           </div>
         </section>
           </>
+        )}
+        </>
         )}
 
         <p className="disclaimer">

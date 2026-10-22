@@ -72,6 +72,18 @@ h1 { margin: 0; font-size: clamp(34px, 5vw, 58px); line-height: 1.02; letter-spa
   padding: 0 18px;
 }
 .demo-note { margin: 14px 0 0; color: var(--muted); font-size: 14px; line-height: 1.5; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.text-button { margin-top: 12px; padding: 0; border: 0; background: transparent; color: var(--green); font-size: 13px; font-weight: 700; }
+.meet-list { margin-top: 18px; padding: 18px 22px; }
+.meet-list > p { margin: 0; padding: 2px 4px; color: var(--muted); }
+.meet-choice {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+  width: 100%; padding: 14px 0; border: 0; border-top: 1px solid var(--line);
+  background: transparent; color: inherit; text-align: left;
+}
+.meet-choice:first-of-type { border-top: 0; }
+.meet-choice strong { font-size: 16px; }
+.meet-choice span { color: var(--muted); font: 600 13px var(--font-geist-mono); white-space: nowrap; }
+.meet-choice:hover strong { color: var(--green); }
 .bar-status { margin: 22px 0 0; color: var(--green); font-size: 14px; font-weight: 700; }
 .error { color: #9b302a; font-size: 13px; margin: 9px 0 0; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px #26352c0a; }
