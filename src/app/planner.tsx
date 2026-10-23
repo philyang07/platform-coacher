@@ -42,6 +42,22 @@ function meetDay(value: string) {
   return `${match[3]}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`;
 }
 
+function scheduledStart(day: string, time: string) {
+  const match = /^(\d{2}):(\d{2})$/.exec(time);
+  const parts = day.split("-").map(Number);
+  if (!match || parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return null;
+  const stamp = new Date(
+    parts[0],
+    parts[1] - 1,
+    parts[2],
+    Number(match[1]),
+    Number(match[2]),
+    0,
+    0,
+  ).getTime();
+  return Number.isNaN(stamp) ? null : stamp;
+}
+
 function extractMeetId(value: string) {
   const trimmed = value.trim().toLowerCase();
   if (trimmed === "demo") return "demo";
@@ -64,6 +80,7 @@ export default function Planner() {
   const [lift, setLift] = useState("squat");
   const [pace, setPace] = useState(60);
   const [liftGapMinutes, setLiftGapMinutes] = useState(10);
+  const [squatStarts, setSquatStarts] = useState<Record<string, string>>({});
   const [feedKey, setFeedKey] = useState(0);
   const [view, setView] = useState<"planner" | "board">("planner");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -96,6 +113,9 @@ export default function Planner() {
         if (Array.isArray(value.warmups)) setWarmups(value.warmups);
         if (typeof value.pace === "number" && value.pace !== 75) setPace(value.pace);
         if (value.liftGapMinutes) setLiftGapMinutes(value.liftGapMinutes);
+        if (value.squatStarts && typeof value.squatStarts === "object") {
+          setSquatStarts(value.squatStarts);
+        }
       });
     } catch {
       // Ignore stale local data.
@@ -142,9 +162,9 @@ export default function Planner() {
   useEffect(() => {
     localStorage.setItem(
       "platform-coacher-settings",
-      JSON.stringify({ warmups, pace, liftGapMinutes }),
+      JSON.stringify({ warmups, pace, liftGapMinutes, squatStarts }),
     );
-  }, [warmups, pace, liftGapMinutes]);
+  }, [warmups, pace, liftGapMinutes, squatStarts]);
 
   useEffect(() => {
     if (!meetId) return;
@@ -290,8 +310,15 @@ export default function Planner() {
     }
 
     const platform = model.platforms.find((item) => item._id === lifter.platformId);
-    let currentId = text(platform?.currentAttemptId);
-    if (!currentId || !ordered.some((item) => item._id === currentId)) {
+    const liveAttemptId = text(platform?.currentAttemptId);
+    const meetStarted =
+      Boolean(liveAttemptId) || ordered.some((item) => item.result);
+    const startMs = scheduledStart(
+      meetDay(text(model.meet?.date)) || today,
+      squatStarts[`${meetId}:${lifter.session ?? ""}`] ?? "",
+    );
+    let currentId = liveAttemptId;
+    if (meetStarted && (!currentId || !ordered.some((item) => item._id === currentId))) {
       currentId =
         [...ordered].sort((a, b) => resultTime(b) - resultTime(a))[0]?._id ?? "";
     }
@@ -317,6 +344,29 @@ export default function Planner() {
         return { lift: liftName, state: "unavailable" as const };
       }
       const targetIndex = ordered.findIndex((item) => item._id === target._id);
+      if (!meetStarted) {
+        if (startMs == null) return { lift: liftName, state: "unscheduled" as const, target };
+        if (targetIndex < 0) return { lift: liftName, state: "waiting" as const, target };
+        let liftBreaks = 0;
+        for (let index = 1; index <= targetIndex; index++) {
+          if (
+            canonicalLift(ordered[index]?.liftName) !==
+            canonicalLift(ordered[index - 1]?.liftName)
+          ) {
+            liftBreaks++;
+          }
+        }
+        const seconds = targetIndex * pace + liftBreaks * liftGapMinutes * 60;
+        return {
+          lift: liftName,
+          state: "estimated" as const,
+          target,
+          at: new Date(startMs + seconds * 1000),
+          attempts: targetIndex,
+          liftBreaks,
+          uncertainty: Math.max(2, Math.ceil((targetIndex * 10) / 60 + liftBreaks * 3)),
+        };
+      }
       if (targetIndex < 0 || currentIndex < 0) {
         return { lift: liftName, state: "waiting" as const, target };
       }
@@ -342,7 +392,7 @@ export default function Planner() {
         uncertainty: Math.max(2, Math.ceil((ahead.length * 10) / 60 + liftBreaks * 3)),
       };
     });
-  }, [model, activeLifterId, pace, liftGapMinutes, updatedAt]);
+  }, [model, activeLifterId, pace, liftGapMinutes, updatedAt, squatStarts, today, meetId]);
 
   const estimate = estimates?.find((item) => item.lift === lift) ?? null;
   const planEstimate =
@@ -464,6 +514,12 @@ export default function Planner() {
     text(currentLifter?.flight) ||
     text(latestResultLifter?.flight) ||
     text(selectedLifter?.flight);
+  const squatStartKey = `${meetId}:${selectedLifter?.session ?? ""}`;
+  const squatStart = squatStarts[squatStartKey] ?? "";
+  const squatStartMs = scheduledStart(meetDay(text(model.meet?.date)) || today, squatStart);
+  const platformLive =
+    Boolean(text(activePlatform?.currentAttemptId)) ||
+    platformAttempts.some((attempt) => attempt.result);
   const barStatus = currentLifter
     ? `On the bar · ${text(currentLifter.name)} · Flight ${text(currentLifter.flight)} · ${canonicalLift(currentAttempt?.liftName)} ${text(currentAttempt?.attemptNumber)} · ${number(currentAttempt?.weight)} ${text(model.meet?.units).toLowerCase()}`
     : platformAttempts.length > 0 && platformAttempts.every((item) => item.result)
@@ -472,7 +528,9 @@ export default function Planner() {
         ? "Lift break"
         : platformAttempts.some((item) => item.result)
           ? "Waiting for the next attempt"
-          : "Waiting for the platform";
+          : squatStartMs != null && !platformLive
+            ? `Squats start ${formatTime(new Date(squatStartMs))}`
+            : "Waiting for the platform";
   const estimateTarget =
     estimate && "target" in estimate ? estimate.target : undefined;
   const targetWeight =
@@ -688,6 +746,17 @@ export default function Planner() {
             />
           </label>
           <label>
+            Squats start
+            <input
+              type="time"
+              value={squatStart}
+              onChange={(event) => {
+                const value = event.target.value;
+                setSquatStarts((current) => ({ ...current, [squatStartKey]: value }));
+              }}
+            />
+          </label>
+          <label>
             Between lifts
             <div className="input-suffix">
               <input
@@ -754,6 +823,14 @@ export default function Planner() {
                 <strong>Attempt has passed</strong>
                 <span>The live platform is later in the lifting order.</span>
               </div>
+            ) : estimate?.state === "unscheduled" ? (
+              <div className="state-message">
+                <strong>Set the squat start</strong>
+                <span>
+                  Enter when squats are scheduled to begin. Warm-ups count back
+                  from that time until the platform goes live.
+                </span>
+              </div>
             ) : (
               <div className="state-message">
                 <strong>Waiting for platform activity</strong>
@@ -776,7 +853,9 @@ export default function Planner() {
                           ? "Done"
                           : item.state === "passed"
                             ? "Passed"
-                            : "Waiting"}
+                            : item.state === "unscheduled"
+                              ? "Set start"
+                              : "Waiting"}
                     </strong>
                   </div>
                 ))}
