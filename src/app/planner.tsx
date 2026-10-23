@@ -58,6 +58,10 @@ function scheduledStart(day: string, time: string) {
   return Number.isNaN(stamp) ? null : stamp;
 }
 
+function attemptLabel(round: number | undefined) {
+  return round === 2 ? "2nd attempt" : round === 3 ? "3rd attempt" : "opener";
+}
+
 function extractMeetId(value: string) {
   const trimmed = value.trim().toLowerCase();
   if (trimmed === "demo") return "demo";
@@ -325,28 +329,42 @@ export default function Planner() {
     const currentIndex = ordered.findIndex((item) => item._id === currentId);
 
     return LIFTS.map((liftName) => {
-      const target = model.attempts.find(
-        (item) =>
-          item.lifterId === activeLifterId &&
-          canonicalLift(item.liftName) === liftName &&
-          number(item.attemptNumber) === 1,
+      const rounds = [1, 2, 3].map((round) =>
+        model.attempts.find(
+          (item) =>
+            item.lifterId === activeLifterId &&
+            canonicalLift(item.liftName) === liftName &&
+            number(item.attemptNumber) === round,
+        ),
       );
-      if (!target) return { lift: liftName, state: "unavailable" as const };
-      if (target.result) {
+      const opener = rounds[0];
+      if (!opener) return { lift: liftName, state: "unavailable" as const };
+      if (typeof opener.weight !== "number" || opener.weight <= 0) {
+        return { lift: liftName, state: "unavailable" as const };
+      }
+      const pendingIndex = rounds.findIndex((attempt) => !attempt?.result);
+      if (pendingIndex === -1) {
+        const last = rounds[rounds.length - 1];
         return {
           lift: liftName,
           state: "complete" as const,
-          target,
-          at: resultTime(target) ? new Date(resultTime(target)) : null,
+          round: 3,
+          target: last,
+          at: last && resultTime(last) ? new Date(resultTime(last)) : null,
         };
       }
-      if (typeof target.weight !== "number" || target.weight <= 0) {
-        return { lift: liftName, state: "unavailable" as const };
+      const round = pendingIndex + 1;
+      const target = rounds[pendingIndex];
+      if (!target) return { lift: liftName, state: "unavailable" as const, round };
+      if (round > 1 && (typeof target.weight !== "number" || target.weight <= 0)) {
+        return { lift: liftName, state: "unavailable" as const, round };
       }
       const targetIndex = ordered.findIndex((item) => item._id === target._id);
       if (!meetStarted) {
-        if (startMs == null) return { lift: liftName, state: "unscheduled" as const, target };
-        if (targetIndex < 0) return { lift: liftName, state: "waiting" as const, target };
+        if (startMs == null) {
+          return { lift: liftName, state: "unscheduled" as const, round, target };
+        }
+        if (targetIndex < 0) return { lift: liftName, state: "waiting" as const, round, target };
         let liftBreaks = 0;
         for (let index = 1; index <= targetIndex; index++) {
           if (
@@ -360,6 +378,7 @@ export default function Planner() {
         return {
           lift: liftName,
           state: "estimated" as const,
+          round,
           target,
           at: new Date(startMs + seconds * 1000),
           attempts: targetIndex,
@@ -368,10 +387,10 @@ export default function Planner() {
         };
       }
       if (targetIndex < 0 || currentIndex < 0) {
-        return { lift: liftName, state: "waiting" as const, target };
+        return { lift: liftName, state: "waiting" as const, round, target };
       }
       if (targetIndex <= currentIndex) {
-        return { lift: liftName, state: "passed" as const, target };
+        return { lift: liftName, state: "passed" as const, round, target };
       }
 
       const ahead = ordered.slice(currentIndex + 1, targetIndex + 1);
@@ -385,6 +404,7 @@ export default function Planner() {
       return {
         lift: liftName,
         state: "estimated" as const,
+        round,
         target,
         at: new Date((updatedAt?.getTime() ?? 0) + seconds * 1000),
         attempts: ahead.length,
@@ -545,6 +565,8 @@ export default function Planner() {
       : "not declared";
   const planLiftName = planEstimate?.lift ?? lift;
   const planLiftLabel = planLiftName[0].toUpperCase() + planLiftName.slice(1);
+  const planRound = planEstimate && "round" in planEstimate ? planEstimate.round : undefined;
+  const planAttemptLabel = attemptLabel(planRound);
 
   return (
     <main>
@@ -794,8 +816,8 @@ export default function Planner() {
               <>
                 <div className="big-time">{formatTime(planEstimate.at)}</div>
                 <p className="range">
-                  Estimated ± {planEstimate.uncertainty} min · {planLiftLabel} opener{" "}
-                  {planWeight}
+                  Estimated ± {planEstimate.uncertainty} min · {planLiftLabel}{" "}
+                  {planAttemptLabel} {planWeight}
                 </p>
                 <div className="stats">
                   <div>
@@ -810,11 +832,11 @@ export default function Planner() {
               </>
             ) : estimate?.state === "complete" ? (
               <div className="state-message">
-                <strong>Attempt complete</strong>
+                <strong>{lift[0].toUpperCase() + lift.slice(1)} finished</strong>
                 <span>
                   {estimate.at
-                    ? `Result recorded ${formatTime(estimate.at)}`
-                    : "Result recorded"}{" "}
+                    ? `Last result ${formatTime(estimate.at)}`
+                    : "Last result recorded"}{" "}
                   · {targetWeight}
                 </span>
               </div>
@@ -930,7 +952,7 @@ export default function Planner() {
             })}
             <div className="attempt-row">
               <span>
-                {planLiftLabel} opener · {planWeight}
+                {planLiftLabel} {planAttemptLabel} · {planWeight}
               </span>
               <strong>
                 {planEstimate?.state === "estimated" ? formatTime(planEstimate.at) : "—"}
