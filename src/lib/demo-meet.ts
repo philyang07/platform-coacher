@@ -194,6 +194,10 @@ function docsAt(elapsed: number, startedAt: number) {
   const current = plan.slots.find(
     (slot) => slot.kind === "attempt" && slot.start <= elapsed && elapsed < slot.end,
   );
+  const inBreak = plan.slots.some(
+    (slot) => slot.kind === "break" && slot.start <= elapsed && elapsed < slot.end,
+  );
+  const upcoming = plan.slots.find((slot) => slot.kind === "attempt" && slot.start > elapsed);
   const docs: Doc[] = [
     {
       _id: DEMO_MEET_ID,
@@ -208,7 +212,7 @@ function docsAt(elapsed: number, startedAt: number) {
       clockState: current ? "started" : "initial",
       clockTimerLength: 60000,
       barAndCollarsWeight: 25,
-      currentAttemptId: current?.attemptId ?? null,
+      currentAttemptId: current?.attemptId ?? (inBreak ? upcoming?.attemptId ?? null : null),
     },
   ];
 

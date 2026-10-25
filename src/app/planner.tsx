@@ -62,6 +62,36 @@ function attemptLabel(round: number | undefined) {
   return round === 2 ? "2nd attempt" : round === 3 ? "3rd attempt" : "opener";
 }
 
+function forecastFromBar(
+  ordered: Doc[],
+  currentIndex: number,
+  targetIndex: number,
+  nowMs: number,
+  pace: number,
+  liftGapMinutes: number,
+) {
+  const ahead = ordered.slice(currentIndex + 1, targetIndex + 1);
+  let liftBreaks = 0;
+  let cursor = nowMs;
+  let previous = ordered[currentIndex];
+  for (const attempt of ahead) {
+    if (canonicalLift(attempt.liftName) !== canonicalLift(previous?.liftName)) {
+      liftBreaks++;
+      const gapMs = liftGapMinutes * 60 * 1000;
+      const finishedAt = previous?.result ? resultTime(previous) : 0;
+      cursor = finishedAt ? Math.max(cursor, finishedAt + gapMs) : cursor + gapMs;
+    }
+    cursor += pace * 1000;
+    previous = attempt;
+  }
+  return {
+    at: new Date(cursor),
+    attempts: ahead.length,
+    liftBreaks,
+    uncertainty: Math.max(2, Math.ceil((ahead.length * 10) / 60 + liftBreaks * 3)),
+  };
+}
+
 function extractMeetId(value: string) {
   const trimmed = value.trim().toLowerCase();
   if (trimmed === "demo") return "demo";
@@ -70,6 +100,7 @@ function extractMeetId(value: string) {
 }
 
 export default function Planner() {
+  const [ready, setReady] = useState(false);
   const [meetInput, setMeetInput] = useState("");
   const [meetId, setMeetId] = useState("");
   const [docs, setDocs] = useState<Map<string, Doc>>(new Map());
@@ -109,21 +140,33 @@ export default function Planner() {
   }, [sequence]);
 
   useEffect(() => {
+    let value: Record<string, unknown> = {};
     const saved = localStorage.getItem("platform-coacher-settings");
-    if (!saved) return;
-    try {
-      const value = JSON.parse(saved);
-      queueMicrotask(() => {
-        if (Array.isArray(value.warmups)) setWarmups(value.warmups);
-        if (typeof value.pace === "number" && value.pace !== 75) setPace(value.pace);
-        if (value.liftGapMinutes) setLiftGapMinutes(value.liftGapMinutes);
-        if (value.squatStarts && typeof value.squatStarts === "object") {
-          setSquatStarts(value.squatStarts);
-        }
-      });
-    } catch {
-      // Ignore stale local data.
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === "object") value = parsed;
+      } catch {
+        // Ignore stale local data.
+      }
     }
+    queueMicrotask(() => {
+      if (Array.isArray(value.warmups)) setWarmups(value.warmups as Warmup[]);
+      if (typeof value.pace === "number" && value.pace !== 75) setPace(value.pace);
+      if (value.liftGapMinutes) setLiftGapMinutes(value.liftGapMinutes as number);
+      if (value.squatStarts && typeof value.squatStarts === "object") {
+        setSquatStarts(value.squatStarts as Record<string, string>);
+      }
+      if (
+        value.meetId === "demo" ||
+        (typeof value.meetId === "string" && /^[a-z0-9]{12}$/.test(value.meetId))
+      ) {
+        setMeetId(value.meetId);
+        setMeetInput(value.meetId);
+      }
+      if (typeof value.lifterId === "string" && value.lifterId) setLifterId(value.lifterId);
+      setReady(true);
+    });
   }, []);
 
   useEffect(() => {
@@ -164,11 +207,12 @@ export default function Planner() {
   }, []);
 
   useEffect(() => {
+    if (!ready) return;
     localStorage.setItem(
       "platform-coacher-settings",
-      JSON.stringify({ warmups, pace, liftGapMinutes, squatStarts }),
+      JSON.stringify({ warmups, pace, liftGapMinutes, squatStarts, meetId, lifterId }),
     );
-  }, [warmups, pace, liftGapMinutes, squatStarts]);
+  }, [ready, warmups, pace, liftGapMinutes, squatStarts, meetId, lifterId]);
 
   useEffect(() => {
     if (!meetId) return;
@@ -321,10 +365,29 @@ export default function Planner() {
       meetDay(text(model.meet?.date)) || today,
       squatStarts[`${meetId}:${lifter.session ?? ""}`] ?? "",
     );
+    const nowMs = updatedAt?.getTime() ?? 0;
+    const clockRunning =
+      text(platform?.clockState) === "started" &&
+      ordered.some((item) => item._id === liveAttemptId && !item.result);
+    const latestResulted = [...ordered]
+      .filter((item) => item.result)
+      .sort((a, b) => resultTime(b) - resultTime(a))[0];
     let currentId = liveAttemptId;
     if (meetStarted && (!currentId || !ordered.some((item) => item._id === currentId))) {
-      currentId =
-        [...ordered].sort((a, b) => resultTime(b) - resultTime(a))[0]?._id ?? "";
+      currentId = latestResulted?._id ?? "";
+    }
+    // The next lift is often loaded before the break is over. Until its clock
+    // starts, keep counting from the last completed lift so the break is still ahead.
+    const loaded = ordered.find((item) => item._id === currentId);
+    if (
+      meetStarted &&
+      !clockRunning &&
+      loaded &&
+      !loaded.result &&
+      latestResulted &&
+      canonicalLift(latestResulted.liftName) !== canonicalLift(loaded.liftName)
+    ) {
+      currentId = text(latestResulted._id);
     }
     const currentIndex = ordered.findIndex((item) => item._id === currentId);
 
@@ -393,23 +456,20 @@ export default function Planner() {
         return { lift: liftName, state: "passed" as const, round, target };
       }
 
-      const ahead = ordered.slice(currentIndex + 1, targetIndex + 1);
-      let liftBreaks = 0;
-      let previous = ordered[currentIndex];
-      for (const attempt of ahead) {
-        if (canonicalLift(attempt.liftName) !== canonicalLift(previous.liftName)) liftBreaks++;
-        previous = attempt;
-      }
-      const seconds = ahead.length * pace + liftBreaks * liftGapMinutes * 60;
+      const forecast = forecastFromBar(
+        ordered,
+        currentIndex,
+        targetIndex,
+        nowMs,
+        pace,
+        liftGapMinutes,
+      );
       return {
         lift: liftName,
         state: "estimated" as const,
         round,
         target,
-        at: new Date((updatedAt?.getTime() ?? 0) + seconds * 1000),
-        attempts: ahead.length,
-        liftBreaks,
-        uncertainty: Math.max(2, Math.ceil((ahead.length * 10) / 60 + liftBreaks * 3)),
+        ...forecast,
       };
     });
   }, [model, activeLifterId, pace, liftGapMinutes, updatedAt, squatStarts, today, meetId]);
@@ -540,17 +600,34 @@ export default function Planner() {
   const platformLive =
     Boolean(text(activePlatform?.currentAttemptId)) ||
     platformAttempts.some((attempt) => attempt.result);
-  const barStatus = currentLifter
-    ? `On the bar · ${text(currentLifter.name)} · Flight ${text(currentLifter.flight)} · ${canonicalLift(currentAttempt?.liftName)} ${text(currentAttempt?.attemptNumber)} · ${number(currentAttempt?.weight)} ${text(model.meet?.units).toLowerCase()}`
-    : platformAttempts.length > 0 && platformAttempts.every((item) => item.result)
-      ? "Platform finished"
-      : latestResult && nextLift && canonicalLift(latestResult.liftName) !== nextLift
+  const clockRunning =
+    text(activePlatform?.clockState) === "started" &&
+    currentAttempt != null &&
+    !currentAttempt.result;
+  const loadedDuringBreak =
+    Boolean(currentLifter) &&
+    !clockRunning &&
+    Boolean(latestResult) &&
+    canonicalLift(latestResult?.liftName) !== canonicalLift(currentAttempt?.liftName);
+  const onTheBar = `On the bar · ${text(currentLifter?.name)} · Flight ${text(currentLifter?.flight)} · ${canonicalLift(currentAttempt?.liftName)} ${text(currentAttempt?.attemptNumber)} · ${number(currentAttempt?.weight)} ${text(model.meet?.units).toLowerCase()}`;
+  const barStatus =
+    currentLifter && clockRunning
+      ? onTheBar
+      : loadedDuringBreak ||
+          (!currentLifter &&
+            latestResult &&
+            nextLift &&
+            canonicalLift(latestResult.liftName) !== nextLift)
         ? "Lift break"
-        : platformAttempts.some((item) => item.result)
-          ? "Waiting for the next attempt"
-          : squatStartMs != null && !platformLive
-            ? `Squats start ${formatTime(new Date(squatStartMs))}`
-            : "Waiting for the platform";
+        : currentLifter
+          ? onTheBar
+          : platformAttempts.length > 0 && platformAttempts.every((item) => item.result)
+            ? "Platform finished"
+            : platformAttempts.some((item) => item.result)
+              ? "Waiting for the next attempt"
+              : squatStartMs != null && !platformLive
+                ? `Squats start ${formatTime(new Date(squatStartMs))}`
+                : "Waiting for the platform";
   const estimateTarget =
     estimate && "target" in estimate ? estimate.target : undefined;
   const targetWeight =
@@ -650,6 +727,10 @@ export default function Planner() {
       )}
 
       <div className="shell">
+        {!ready ? (
+          <p className="subhead">Loading…</p>
+        ) : (
+        <>
         <section className="hero">
           <p className="eyebrow">LiftingCast warm-up planner</p>
           <h1>
@@ -970,6 +1051,8 @@ export default function Planner() {
           can shift with jury decisions, clock resets, scratches, and
           unannounced breaks.
         </p>
+        </>
+        )}
       </div>
     </main>
   );
